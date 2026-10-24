@@ -30,6 +30,9 @@ STRIPE_HALF = math.asin(0.52)        # stripe covers latitudes within +-31 degre
 NUMBER_RADIUS = 0.42                 # number circle, as a fraction of the ball radius (chord)
 DOT_RADIUS = 0.13
 LIGHT_SIZE = 0.95
+UNLIT_TINT = 0xFEFDFC              # marks the balls for the patched item shader
+UNLIT_ARGB = (0xFF000000 | UNLIT_TINT) - (1 << 32)   # as an opaque signed ARGB int, like vanilla
+ITEM_VSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "item.vsh")   # from the 26.3 client jar
 INK = (18, 18, 18)
 
 
@@ -184,7 +187,7 @@ def sphere_elements(tex):
                 "shade": False,
                 "faces": {"south": {"uv": [round(lon0 / (2 * math.pi) * 16, 4), round(v0, 4),
                                            round((lon0 + dlon) / (2 * math.pi) * 16, 4), round(v1, 4)],
-                                    "texture": tex}},
+                                    "texture": tex, "tintindex": 0}},
             })
     return els
 
@@ -236,9 +239,31 @@ def build(src, out):
     with open(os.path.join(models, "hg", "ball_light.json"), "w") as fh:
         json.dump({"textures": {"0": t, "particle": t},
                    "elements": [{"from": [C - q, C - q, C - e], "to": [C + q, C + q, C + e], "shade": False,
-                                 "faces": {"south": {"uv": [0, 0, 16, 16], "texture": "#0"}}}]}, fh, indent=1)
+                                 "faces": {"south": {"uv": [0, 0, 16, 16], "texture": "#0", "tintindex": 0}}}]}, fh, indent=1)
     with open(os.path.join(items, "hg_ball_light.json"), "w") as fh:
-        json.dump({"model": {"type": "minecraft:model", "model": "%s:item/hg/ball_light" % NS}}, fh, indent=1)
+        json.dump({"model": {"type": "minecraft:model", "model": "%s:item/hg/ball_light" % NS,
+                             "tints": [{"type": "minecraft:constant", "value": UNLIT_ARGB}]}}, fh, indent=1)
+    # Mark the balls with a tint colour no vanilla item uses, so the item shader can skip its
+    # six-direction lighting for them (the overlay does their shading instead).
+    for name in ["ball_%02d" % n for n in range(1, 16)] + ["cueball", "cueball_clean"] + list(SNOOKER):
+        with open(os.path.join(items, "render_%s.json" % name), "w") as fh:
+            json.dump({"model": {"type": "minecraft:model", "model": "%s:item/%s" % (NS, name),
+                                 "tints": [{"type": "minecraft:constant", "value": UNLIT_ARGB}]}}, fh, indent=1)
+    shaders = os.path.join(out, "assets", "minecraft", "shaders", "core")
+    os.makedirs(shaders, exist_ok=True)
+    with open(ITEM_VSH, encoding="utf-8") as fh:
+        vsh = fh.read()
+    line = "    vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);\n"
+    assert vsh.count(line) == 1, "item.vsh changed: update the patch"
+    r, g, b = (UNLIT_TINT >> 16) & 255, (UNLIT_TINT >> 8) & 255, UNLIT_TINT & 255
+    patch = (line +
+             "    // Antigravity Server: pool balls carry this exact tint and are shaded by their own\n"
+             "    // see-through overlay, so skip the per-face lighting that would light them in patches\n"
+             "    if (all(lessThan(abs(Color.rgb - vec3(%d.0, %d.0, %d.0) / 255.0), vec3(0.002)))) {\n"
+             "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
+             "    }\n") % (r, g, b)
+    with open(os.path.join(shaders, "item.vsh"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(vsh.replace(line, patch))
     print("wrote %d-quad sphere balls to %s" % (len(elements), os.path.abspath(out)))
 
 

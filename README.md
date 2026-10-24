@@ -12,9 +12,11 @@ v1.3.7 by **YMS2001 / Squid Workshop**, with its 24 ball models replaced by real
   rotate on all three axes), showing its patch of an equirectangular texture with the colour,
   stripe, number circles and cue-ball dots painted on in true sphere projection
 - the datapack already rotates its balls as they roll, so the numbers and stripes roll with them
-- the mesh is unlit (Minecraft lights faces by their nearest axis, which would give six flat
-  patches); the server stacks one see-through lighting overlay (`hg_ball_light`: soft shadow and
-  gloss) in front of each ball, facing the viewer
+- Minecraft lights every item face by its nearest axis direction, which lights a sphere in six flat
+  patches. The balls carry a tint colour no vanilla item uses (`#FEFDFC`), and the pack's patched
+  `shaders/core/item.vsh` skips that lighting for exactly that tint (`item.vsh` here is the 26.3
+  original the build patches). The server stacks one see-through lighting overlay (`hg_ball_light`:
+  soft shadow and gloss) in front of each ball, facing the viewer, which does the shading instead
 
 ![preview](preview_sphere.png)
 
