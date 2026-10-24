@@ -239,7 +239,8 @@ def build(src, out):
     with open(os.path.join(models, "hg", "ball_light.json"), "w") as fh:
         json.dump({"textures": {"0": t, "particle": t},
                    "elements": [{"from": [C - q, C - q, C - e], "to": [C + q, C + q, C + e], "shade": False,
-                                 "faces": {"south": {"uv": [0, 0, 16, 16], "texture": "#0", "tintindex": 0}}}]}, fh, indent=1)
+                                 "faces": {"north": {"uv": [0, 0, 16, 16], "texture": "#0", "tintindex": 0}}}]}, fh, indent=1)
+    # north: item displays turn their item 180 degrees, so this is the side facing the viewer
     with open(os.path.join(items, "hg_ball_light.json"), "w") as fh:
         json.dump({"model": {"type": "minecraft:model", "model": "%s:item/hg/ball_light" % NS,
                              "tints": [{"type": "minecraft:constant", "value": UNLIT_ARGB}]}}, fh, indent=1)
