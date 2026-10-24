@@ -21,8 +21,10 @@ v1.3.7 by **YMS2001 / Squid Workshop**, with its 24 ball models replaced by real
   intersects each pixel's line of sight with the sphere and draws the shading (a fixed light above the
   table, a darker rim and a gloss that follows the viewer) as a see-through layer, at the depth of the
   sphere's surface, so other balls and the cue cover it properly. `item.vsh`/`item.fsh` here are the
-  26.3 originals the build patches; `ShaderCheck.java` compiles the patched pair with the real OpenGL
-  driver (LWJGL from the Minecraft install) for each variant the game builds.
+  26.3 originals the build patches; `McShaderCheck.java` compiles the patched pair the way the 26.3
+  client does (shaderc to SPIR-V, Vulkan-style GLSL: `gl_VertexIndex`, not `gl_VertexID`) for every
+  variant of the item pipelines. Run it before publishing: a shader that fails to compile makes the
+  client drop the whole pack.
 
 ![preview](preview_sphere.png)
 

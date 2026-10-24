@@ -202,7 +202,7 @@ def patch_item_vsh(vsh):
              "    }\n"
              "    if (antigravity_tint(Color, %(overlay)s)) {\n"
              "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
-             "        int corner = gl_VertexID %% 4;\n"
+             "        int corner = gl_VertexIndex %% 4;\n"
              "        vec2 side = vec2(corner < 2 ? -1.0 : 1.0, (corner == 0 || corner == 3) ? 1.0 : -1.0);\n"
              "        vec3 right = vec3(ModelViewMat[0][0], ModelViewMat[1][0], ModelViewMat[2][0]);\n"
              "        vec3 up = vec3(ModelViewMat[0][1], ModelViewMat[1][1], ModelViewMat[2][1]);\n"
