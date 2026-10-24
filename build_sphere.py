@@ -29,12 +29,15 @@ TEX_W, TEX_H = 512, 256  # equirectangular texture
 STRIPE_HALF = math.asin(0.52)        # stripe covers latitudes within +-31 degrees
 NUMBER_RADIUS = 0.42                 # number circle, as a fraction of the ball radius (chord)
 DOT_RADIUS = 0.13
-LIGHT_SIZE = 1.0
+LIGHT_SIZE = 1.6                   # the overlay square, as a fraction of the radius: covers the
+                                   # ball's outline even near the edge of the screen
+DISPLAY_SCALE = 0.5                # the pool pack shows its balls at this scale
+SPHERE_RADIUS = R / 16.0 * DISPLAY_SCALE * 1.012   # in blocks, a hair over the mesh
 # Tint colours no vanilla item uses, which the patched item shader looks for
 BALL_TINT = 0xFEFDFC               # balls: skip the per-face lighting
-OVERLAY_TINT = 0xFEFDFB            # lighting overlays: also pull them in front of the ball
-OVERLAY_PULL = 0.15                # blocks; the balls' radius is 0.125
+OVERLAY_TINT = 0xFEFDFB            # lighting overlays: ray-traced shading
 ITEM_VSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "item.vsh")   # from the 26.3 client jar
+ITEM_FSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "item.fsh")
 INK = (18, 18, 18)
 
 
@@ -172,29 +175,90 @@ def _glsl_rgb(rgb):
 def patch_item_vsh(vsh):
     """Patch Minecraft's item vertex shader for the pool balls.
 
-    Balls and overlays skip the per-face lighting. The overlay sits at the ball's centre (the
-    server puts it there, facing the viewer) and is moved towards the eye along each vertex's
-    own line of sight, so it draws in front of the ball without moving on screen. Position is
-    relative to the camera here."""
+    Balls and overlays skip the per-face lighting. For an overlay vertex it also works out the
+    ball's centre and passes it to the fragment shader, which ray-traces the sphere. The overlay
+    is a square facing the camera at the ball's centre (the server puts it there), so its centre
+    is the vertex minus that corner's offset along the camera's right and up axes. The corner is
+    the vertex's index within its quad, in Minecraft's order for a north face (MAX_X MAX_Y,
+    MAX_X MIN_Y, MIN_X MIN_Y, MIN_X MAX_Y; an item display turns the model 180 degrees, so
+    +x ends up on the viewer's left). Position is relative to the camera here."""
     main = "void main() {\n"
-    pos = "    gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);\n"
     light = "    vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);\n"
-    for part in (main, pos, light):
+    for part in (main, light):
         assert vsh.count(part) == 1, "item.vsh changed: update the patch"
     helper = ("// Antigravity Server: pool balls (see the resource pack's README)\n"
               "bool antigravity_tint(vec4 color, vec3 tint) {\n"
               "    return all(lessThan(abs(color.rgb - tint), vec3(0.002)));\n"
-              "}\n\n")
-    moved = ("    vec3 position = Position;\n"
-             "    if (antigravity_tint(Color, %s)) {\n"
-             "        position *= max(0.0, 1.0 - %.3f / max(length(Position), 0.0001));\n"
-             "    }\n"
-             "    gl_Position = ProjMat * ModelViewMat * vec4(position, 1.0);\n") % (_glsl_rgb(OVERLAY_TINT), OVERLAY_PULL)
+              "}\n"
+              "layout(location = 8) out vec3 antigravityPos;\n"
+              "layout(location = 9) flat out vec3 antigravityCentre;\n"
+              "layout(location = 10) flat out float antigravityBall;\n\n")
     unlit = (light +
-             "    if (antigravity_tint(Color, %s) || antigravity_tint(Color, %s)) {\n"
+             "    antigravityPos = Position;\n"
+             "    antigravityCentre = vec3(0.0);\n"
+             "    antigravityBall = 0.0;\n"
+             "    if (antigravity_tint(Color, %(ball)s)) {\n"
              "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
-             "    }\n") % (_glsl_rgb(BALL_TINT), _glsl_rgb(OVERLAY_TINT))
-    return vsh.replace(main, helper + main).replace(pos, moved).replace(light, unlit)
+             "    }\n"
+             "    if (antigravity_tint(Color, %(overlay)s)) {\n"
+             "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
+             "        int corner = gl_VertexID %% 4;\n"
+             "        vec2 side = vec2(corner < 2 ? -1.0 : 1.0, (corner == 0 || corner == 3) ? 1.0 : -1.0);\n"
+             "        vec3 right = vec3(ModelViewMat[0][0], ModelViewMat[1][0], ModelViewMat[2][0]);\n"
+             "        vec3 up = vec3(ModelViewMat[0][1], ModelViewMat[1][1], ModelViewMat[2][1]);\n"
+             "        antigravityCentre = Position - %(half)s * (side.x * right + side.y * up);\n"
+             "        antigravityBall = 1.0;\n"
+             "    }\n") % {"ball": _glsl_rgb(BALL_TINT), "overlay": _glsl_rgb(OVERLAY_TINT),
+                         "half": "%.5f" % (R * LIGHT_SIZE / 16.0 * DISPLAY_SCALE)}
+    return vsh.replace(main, helper + main).replace(light, unlit)
+
+
+def patch_item_fsh(fsh):
+    """Ray-trace the ball under each overlay pixel: lighting from a fixed light above the
+    table (diffuse, a darker rim, and a gloss highlight that follows the viewer), written as
+    a see-through layer over the unlit ball, with the depth of the sphere's surface so other
+    balls and the cue hide it properly."""
+    head = "#include <minecraft:oit.glsl>\n"
+    main = "void main() {\n    vec4 color = texture(Sampler0, texCoord0);\n"
+    tint = "    color *= vertexColor * ColorModulator;\n"
+    tail = "    #ifdef OIT_ALPHA_ONLY\n    executeAlphaOnlyPhase(gl_FragCoord.z, color.a);\n"
+    for part in (head, main, tint, tail):
+        assert fsh.count(part) == 1, "item.fsh changed: update the patch"
+    decl = (head +
+            "#include <minecraft:projection.glsl>\n\n"
+            "// Antigravity Server: pool balls (see the resource pack's README)\n"
+            "layout(location = 8) in vec3 antigravityPos;\n"
+            "layout(location = 9) flat in vec3 antigravityCentre;\n"
+            "layout(location = 10) flat in float antigravityBall;\n")
+    shade = ("void main() {\n"
+             "    vec4 color;\n"
+             "    float depth = gl_FragCoord.z;\n"
+             "    if (antigravityBall > 0.5) {\n"
+             "        vec3 dir = normalize(antigravityPos);           // the eye is at the origin\n"
+             "        vec3 oc = -antigravityCentre;\n"
+             "        float b = dot(oc, dir);\n"
+             "        float h = b * b - (dot(oc, oc) - %(r2)s);\n"
+             "        if (h < 0.0) {\n"
+             "            discard;\n"
+             "        }\n"
+             "        vec3 hit = dir * (-b - sqrt(h));\n"
+             "        vec3 n = normalize(hit - antigravityCentre);\n"
+             "        vec3 light = normalize(vec3(0.35, 1.0, 0.25));\n"
+             "        vec3 view = -dir;\n"
+             "        float diffuse = max(dot(n, light), 0.0);\n"
+             "        float rim = pow(1.0 - max(dot(n, view), 0.0), 3.0);\n"
+             "        float keep = (0.42 + 0.58 * diffuse) * (1.0 - 0.3 * rim);   // how much of the ball shows\n"
+             "        float gloss = pow(max(dot(n, normalize(light + view)), 0.0), 90.0) * 0.85;\n"
+             "        float alpha = 1.0 - keep * (1.0 - gloss);\n"
+             "        color = vec4(vec3(alpha > 0.0 ? gloss / alpha : 0.0), alpha) * ColorModulator;\n"
+             "        vec4 atHit = ProjMat * ModelViewMat * vec4(hit - dir * 0.01, 1.0);  // just in front\n"
+             "        vec4 atQuad = ProjMat * ModelViewMat * vec4(antigravityPos, 1.0);\n"
+             "        depth = gl_FragCoord.z + (atHit.z / atHit.w - atQuad.z / atQuad.w);\n"
+             "    } else {\n"
+             "    color = texture(Sampler0, texCoord0);\n") % {"r2": "%.6f" % (SPHERE_RADIUS ** 2)}
+    fsh = fsh.replace(head, decl).replace(main, shade)
+    fsh = fsh.replace(tint, tint + "    }\n    gl_FragDepth = depth;\n")
+    return fsh.replace(tail, "    #ifdef OIT_ALPHA_ONLY\n    executeAlphaOnlyPhase(depth, color.a);\n")
 
 
 # --- models ---------------------------------------------------------------------------
@@ -295,6 +359,10 @@ def build(src, out):
         vsh = fh.read()
     with open(os.path.join(shaders, "item.vsh"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(patch_item_vsh(vsh))
+    with open(ITEM_FSH, encoding="utf-8") as fh:
+        fsh = fh.read()
+    with open(os.path.join(shaders, "item.fsh"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(patch_item_fsh(fsh))
     print("wrote %d-quad sphere balls to %s" % (len(elements), os.path.abspath(out)))
 
 

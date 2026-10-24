@@ -14,11 +14,15 @@ v1.3.7 by **YMS2001 / Squid Workshop**, with its 24 ball models replaced by real
 - the datapack already rotates its balls as they roll, so the numbers and stripes roll with them
 - Minecraft lights every item face by its nearest axis direction, which lights a sphere in six flat
   patches. The balls carry a tint colour no vanilla item uses (`#FEFDFC`), and the pack's patched
-  `shaders/core/item.vsh` skips that lighting for exactly that tint (`item.vsh` here is the 26.3
-  original the build patches). The server stacks one see-through lighting overlay (`hg_ball_light`:
-  soft shadow and gloss) on each ball, at its centre and facing the viewer, which does the shading
-  instead. The overlay carries its own tint (`#FEFDFB`), and the shader moves its vertices towards
-  the eye along their own line of sight, so it draws in front of the ball without moving on screen
+  `shaders/core/item.vsh` skips that lighting for exactly that tint.
+- The shading is ray-traced: the server stacks one camera-facing square (`hg_ball_light`, tint
+  `#FEFDFB`) at each ball's centre. The patched `item.vsh` works out the ball's centre from the
+  square's corner (its vertex index within the quad) and the camera axes; the patched `item.fsh`
+  intersects each pixel's line of sight with the sphere and draws the shading (a fixed light above the
+  table, a darker rim and a gloss that follows the viewer) as a see-through layer, at the depth of the
+  sphere's surface, so other balls and the cue cover it properly. `item.vsh`/`item.fsh` here are the
+  26.3 originals the build patches; `ShaderCheck.java` compiles the patched pair with the real OpenGL
+  driver (LWJGL from the Minecraft install) for each variant the game builds.
 
 ![preview](preview_sphere.png)
 
