@@ -16,7 +16,9 @@ v1.3.7 by **YMS2001 / Squid Workshop**, with its 24 ball models replaced by real
   patches. The balls carry a tint colour no vanilla item uses (`#FEFDFC`), and the pack's patched
   `shaders/core/item.vsh` skips that lighting for exactly that tint (`item.vsh` here is the 26.3
   original the build patches). The server stacks one see-through lighting overlay (`hg_ball_light`:
-  soft shadow and gloss) in front of each ball, facing the viewer, which does the shading instead
+  soft shadow and gloss) on each ball, at its centre and facing the viewer, which does the shading
+  instead. The overlay carries its own tint (`#FEFDFB`), and the shader moves its vertices towards
+  the eye along their own line of sight, so it draws in front of the ball without moving on screen
 
 ![preview](preview_sphere.png)
 

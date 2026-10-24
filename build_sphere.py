@@ -29,9 +29,11 @@ TEX_W, TEX_H = 512, 256  # equirectangular texture
 STRIPE_HALF = math.asin(0.52)        # stripe covers latitudes within +-31 degrees
 NUMBER_RADIUS = 0.42                 # number circle, as a fraction of the ball radius (chord)
 DOT_RADIUS = 0.13
-LIGHT_SIZE = 0.95
-UNLIT_TINT = 0xFEFDFC              # marks the balls for the patched item shader
-UNLIT_ARGB = (0xFF000000 | UNLIT_TINT) - (1 << 32)   # as an opaque signed ARGB int, like vanilla
+LIGHT_SIZE = 1.0
+# Tint colours no vanilla item uses, which the patched item shader looks for
+BALL_TINT = 0xFEFDFC               # balls: skip the per-face lighting
+OVERLAY_TINT = 0xFEFDFB            # lighting overlays: also pull them in front of the ball
+OVERLAY_PULL = 0.15                # blocks; the balls' radius is 0.125
 ITEM_VSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "item.vsh")   # from the 26.3 client jar
 INK = (18, 18, 18)
 
@@ -157,6 +159,44 @@ def light_overlay():
     return img.resize((size, size), Image.LANCZOS)
 
 
+# --- shader ---------------------------------------------------------------------------
+
+def _argb(rgb):
+    return (0xFF000000 | rgb) - (1 << 32)     # an opaque signed ARGB int, as vanilla writes tints
+
+
+def _glsl_rgb(rgb):
+    return "vec3(%d.0, %d.0, %d.0) / 255.0" % ((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
+
+
+def patch_item_vsh(vsh):
+    """Patch Minecraft's item vertex shader for the pool balls.
+
+    Balls and overlays skip the per-face lighting. The overlay sits at the ball's centre (the
+    server puts it there, facing the viewer) and is moved towards the eye along each vertex's
+    own line of sight, so it draws in front of the ball without moving on screen. Position is
+    relative to the camera here."""
+    main = "void main() {\n"
+    pos = "    gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);\n"
+    light = "    vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);\n"
+    for part in (main, pos, light):
+        assert vsh.count(part) == 1, "item.vsh changed: update the patch"
+    helper = ("// Antigravity Server: pool balls (see the resource pack's README)\n"
+              "bool antigravity_tint(vec4 color, vec3 tint) {\n"
+              "    return all(lessThan(abs(color.rgb - tint), vec3(0.002)));\n"
+              "}\n\n")
+    moved = ("    vec3 position = Position;\n"
+             "    if (antigravity_tint(Color, %s)) {\n"
+             "        position *= max(0.0, 1.0 - %.3f / max(length(Position), 0.0001));\n"
+             "    }\n"
+             "    gl_Position = ProjMat * ModelViewMat * vec4(position, 1.0);\n") % (_glsl_rgb(OVERLAY_TINT), OVERLAY_PULL)
+    unlit = (light +
+             "    if (antigravity_tint(Color, %s) || antigravity_tint(Color, %s)) {\n"
+             "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
+             "    }\n") % (_glsl_rgb(BALL_TINT), _glsl_rgb(OVERLAY_TINT))
+    return vsh.replace(main, helper + main).replace(pos, moved).replace(light, unlit)
+
+
 # --- models ---------------------------------------------------------------------------
 
 def sphere_elements(tex):
@@ -233,38 +273,28 @@ def build(src, out):
     light_overlay().save(os.path.join(tex_dir, "ball_light.png"))
     t = "%s:item/hg/ball_light" % NS
     e = 0.001
-    # The overlay sits a ball radius in front of the ball, so it looks a little bigger than the
-    # ball; 95% matches it from a couple of blocks away, and the shadow fades out at the rim.
     q = R * LIGHT_SIZE
     with open(os.path.join(models, "hg", "ball_light.json"), "w") as fh:
+        # north: item displays turn their item 180 degrees, so this is the side facing the viewer
         json.dump({"textures": {"0": t, "particle": t},
                    "elements": [{"from": [C - q, C - q, C - e], "to": [C + q, C + q, C + e], "shade": False,
-                                 "faces": {"north": {"uv": [0, 0, 16, 16], "texture": "#0", "tintindex": 0}}}]}, fh, indent=1)
-    # north: item displays turn their item 180 degrees, so this is the side facing the viewer
+                                 "faces": {"north": {"uv": [0, 0, 16, 16], "texture": "#0", "tintindex": 0}}}]},
+                  fh, indent=1)
     with open(os.path.join(items, "hg_ball_light.json"), "w") as fh:
         json.dump({"model": {"type": "minecraft:model", "model": "%s:item/hg/ball_light" % NS,
-                             "tints": [{"type": "minecraft:constant", "value": UNLIT_ARGB}]}}, fh, indent=1)
+                             "tints": [{"type": "minecraft:constant", "value": _argb(OVERLAY_TINT)}]}}, fh, indent=1)
     # Mark the balls with a tint colour no vanilla item uses, so the item shader can skip its
     # six-direction lighting for them (the overlay does their shading instead).
     for name in ["ball_%02d" % n for n in range(1, 16)] + ["cueball", "cueball_clean"] + list(SNOOKER):
         with open(os.path.join(items, "render_%s.json" % name), "w") as fh:
             json.dump({"model": {"type": "minecraft:model", "model": "%s:item/%s" % (NS, name),
-                                 "tints": [{"type": "minecraft:constant", "value": UNLIT_ARGB}]}}, fh, indent=1)
+                                 "tints": [{"type": "minecraft:constant", "value": _argb(BALL_TINT)}]}}, fh, indent=1)
     shaders = os.path.join(out, "assets", "minecraft", "shaders", "core")
     os.makedirs(shaders, exist_ok=True)
     with open(ITEM_VSH, encoding="utf-8") as fh:
         vsh = fh.read()
-    line = "    vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color);\n"
-    assert vsh.count(line) == 1, "item.vsh changed: update the patch"
-    r, g, b = (UNLIT_TINT >> 16) & 255, (UNLIT_TINT >> 8) & 255, UNLIT_TINT & 255
-    patch = (line +
-             "    // Antigravity Server: pool balls carry this exact tint and are shaded by their own\n"
-             "    // see-through overlay, so skip the per-face lighting that would light them in patches\n"
-             "    if (all(lessThan(abs(Color.rgb - vec3(%d.0, %d.0, %d.0) / 255.0), vec3(0.002)))) {\n"
-             "        vertexColor = vec4(1.0, 1.0, 1.0, Color.a);\n"
-             "    }\n") % (r, g, b)
     with open(os.path.join(shaders, "item.vsh"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(vsh.replace(line, patch))
+        fh.write(patch_item_vsh(vsh))
     print("wrote %d-quad sphere balls to %s" % (len(elements), os.path.abspath(out)))
 
 
